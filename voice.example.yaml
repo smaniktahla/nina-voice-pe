@@ -1,0 +1,193 @@
+esphome:
+  name: nina-voice-pe
+  min_version: 2026.9.1
+  friendly_name: Nina Voice
+  name_add_mac_suffix: true
+  on_boot:
+    priority: -100
+    then:
+      - switch.turn_on: internal_speaker_amp
+      - lambda: id(hardware_speaker).start();
+      - light.turn_on:
+          id: status_ring
+          effect: Nina status
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  cpu_frequency: 240MHz
+  flash_size: 16MB
+  partitions: partitions.csv
+  framework:
+    type: esp-idf
+    version: 5.5.5
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+  level: DEBUG
+  hardware_uart: USB_SERIAL_JTAG
+
+# No explicit SSID: retain the factory-provisioned Wi-Fi preference in NVS.
+wifi:
+  power_save_mode: none
+  reboot_timeout: 0s
+
+improv_serial:
+
+time:
+  - platform: sntp
+    id: network_time
+    servers: [time.cloudflare.com, pool.ntp.org]
+
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [nina_voice]
+  - source:
+      type: git
+      url: https://github.com/esphome/home-assistant-voice-pe
+      ref: d4e6fa43d6a1a7d342b7d4d403567e06516719de
+    components: [voice_kit]
+
+i2c:
+  id: internal_i2c
+  sda: GPIO5
+  scl: GPIO6
+  frequency: 400kHz
+
+# Intentionally omit firmware: never flash the XMOS in this experiment.
+voice_kit:
+  id: voice_kit_component
+  i2c_id: internal_i2c
+  reset_pin: GPIO4
+  channel_0_stage: AGC
+  channel_1_stage: NS
+
+audio_dac:
+  - platform: aic3204
+    id: aic3204_dac
+    i2c_id: internal_i2c
+
+switch:
+  - platform: gpio
+    id: internal_speaker_amp
+    pin: GPIO47
+    restore_mode: ALWAYS_OFF
+    internal: true
+
+binary_sensor:
+  - platform: gpio
+    id: hardware_mute
+    pin: GPIO3
+    on_state:
+      - lambda: id(nina).set_muted(x);
+  - platform: gpio
+    id: center_button
+    pin:
+      number: GPIO0
+      inverted: true
+    on_click:
+      - lambda: id(nina).button();
+
+power_supply:
+  - id: led_power
+    pin: GPIO45
+
+light:
+  - platform: esp32_rmt_led_strip
+    id: status_ring
+    pin: GPIO21
+    num_leds: 12
+    rgb_order: GRB
+    bit0_high: 300ns
+    bit0_low: 975ns
+    bit1_high: 650ns
+    bit1_low: 650ns
+    reset_low: 300us
+    reset_high: 0us
+    power_supply: led_power
+    restore_mode: ALWAYS_ON
+    default_transition_length: 0s
+    effects:
+      - addressable_lambda:
+          name: Nina status
+          update_interval: 100ms
+          lambda: |-
+            if (id(nina).showing_volume()) {
+              it.all() = Color(0, 0, 0);
+              const float segments = id(nina).volume_fraction() * 12.0f;
+              for (int i = 0; i < 12; ++i) {
+                const float level = std::min(1.0f, std::max(0.0f, segments - i));
+                it[(i + 7) % 12] = Color(0, uint8_t(45 * level), uint8_t(70 * level));
+              }
+            }
+            else if (id(nina).muted()) it.all() = Color(20, 0, 0);
+            else if (!id(nina).connected()) it.all() = Color(16, 6, 0);
+            else if (id(nina).awake()) it.all() = Color(0, 8, 20);
+            else it.all() = Color(5, 0, 10);
+
+sensor:
+  - platform: rotary_encoder
+    id: dial
+    pin_a: GPIO16
+    pin_b: GPIO18
+    resolution: 2
+    on_clockwise:
+      - lambda: id(nina).volume_step(0.03f);
+    on_anticlockwise:
+      - lambda: id(nina).volume_step(-0.03f);
+
+i2s_audio:
+  - id: i2s_output
+    i2s_lrclk_pin: GPIO7
+    i2s_bclk_pin: GPIO8
+  - id: i2s_input
+    i2s_lrclk_pin: GPIO14
+    i2s_bclk_pin: GPIO13
+
+microphone:
+  - platform: i2s_audio
+    id: i2s_mics
+    i2s_din_pin: GPIO15
+    adc_type: external
+    pdm: false
+    sample_rate: 16000
+    bits_per_sample: 32bit
+    i2s_mode: secondary
+    i2s_audio_id: i2s_input
+    channel: stereo
+
+speaker:
+  - platform: i2s_audio
+    id: hardware_speaker
+    sample_rate: 48000
+    i2s_mode: secondary
+    i2s_dout_pin: GPIO10
+    bits_per_sample: 32bit
+    i2s_audio_id: i2s_output
+    dac_type: external
+    channel: stereo
+    timeout: never
+    buffer_duration: 120ms
+    audio_dac: aic3204_dac
+
+nina_voice:
+  id: nina
+  url: !secret nina_url
+  microphone:
+    microphone: i2s_mics
+    # Restore the original sensitive channel for wake and normal listening.
+    channels: 0
+    gain_factor: 1
+  playback_microphone:
+    microphone: i2s_mics
+    # Keep listening during replies, without automatic gain raising residual echo.
+    channels: 1
+    gain_factor: 16
+  speaker: hardware_speaker
+  certificate: nina-server-cert.pem
+  service_token: !secret nina_service_token

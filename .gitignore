@@ -1,0 +1,24 @@
+# Credentials and generated output
+secrets.yaml
+secrets.*.yaml
+!secrets.example.yaml
+*.pem
+*.key
+*.bin
+*.elf
+*.map
+*.log
+.esphome/
+.venv/
+__pycache__/
+*.pyc
+
+# Working installation and private troubleshooting records
+voice.yaml
+STATUS.md
+README.local.md
+nina_server_reference.py
+prepare_private.py
+probe_nina.py
+probe_audio.py
+flash_candidate.py
