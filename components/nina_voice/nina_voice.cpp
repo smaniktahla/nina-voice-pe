@@ -65,12 +65,14 @@ void NinaVoice::event(void *arg, esp_event_base_t, int32_t id, void *data) {
 
 void NinaVoice::on_event(int32_t id, esp_websocket_event_data_t *data) {
   if (id == WEBSOCKET_EVENT_CONNECTED) {
+    hello_received_ = false; session_received_ = false; wake_flash_ = false;
     connected_ = true;
     ESP_LOGI(TAG, "Authenticated WSS connected");
     return;
   }
   if (id == WEBSOCKET_EVENT_DISCONNECTED || id == WEBSOCKET_EVENT_CLOSED) {
     connected_ = false; cancel_ = true; awake_ = false;
+    hello_received_ = false; session_received_ = false; wake_flash_ = false;
     ESP_LOGW(TAG, "WSS disconnected; waiting for reconnect");
     return;
   }
@@ -128,15 +130,39 @@ void NinaVoice::text_message() {
       duck_ = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "on"));
       ESP_LOGI(TAG, "Server duck: %s", duck_ ? "on" : "off");
     }
+    else if (strcmp(type->valuestring, "earcon") == 0) {
+      auto *kind = cJSON_GetObjectItemCaseSensitive(root, "kind");
+      if (cJSON_IsString(kind) && strcmp(kind->valuestring, "wake") == 0) wake_flash_ = true;
+    }
     else if (strcmp(type->valuestring, "mgr") == 0) {
       auto *state = cJSON_GetObjectItemCaseSensitive(root, "state");
       if (cJSON_IsString(state)) {
+        session_received_ = strcmp(state->valuestring, "ACTIVE") == 0 || strcmp(state->valuestring, "IDLE") == 0 ||
+                            strcmp(state->valuestring, "DORMANT") == 0 || strcmp(state->valuestring, "SUSPENDED") == 0;
         awake_ = strcmp(state->valuestring, "ACTIVE") == 0 || strcmp(state->valuestring, "IDLE") == 0;
         ESP_LOGI(TAG, "Session state: %s", state->valuestring);
       }
-    } else if (strcmp(type->valuestring, "hello") == 0) ESP_LOGI(TAG, "Nina hello received");
+    } else if (strcmp(type->valuestring, "hello") == 0) {
+      hello_received_ = true;
+      ESP_LOGI(TAG, "Nina hello received");
+    }
   }
   cJSON_Delete(root);
+}
+
+RingFrame NinaVoice::status_frame() {
+  if (wake_flash_.exchange(false)) status_ring_.wake(millis());
+  RingInputs inputs;
+  inputs.wifi = wifi::global_wifi_component != nullptr && wifi::global_wifi_component->is_connected();
+  inputs.clock_synced = std::time(nullptr) > 1700000000;
+  inputs.connected = connected_;
+  inputs.session_ready = ready() && (muted_ || mic_->is_running());
+  inputs.muted = muted_;
+  inputs.awake = awake_;
+  inputs.failed = is_failed();
+  inputs.showing_volume = showing_volume();
+  inputs.volume = volume_fraction();
+  return status_ring_.frame(millis(), inputs);
 }
 
 void NinaVoice::clear_playback() {

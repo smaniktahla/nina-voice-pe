@@ -1,0 +1,66 @@
+#include "status_ring.h"
+#include <cassert>
+#include <iostream>
+using namespace esphome::nina_voice;
+int main() {
+  RingInputs in;
+  StatusRing ring;
+  assert(ring.stage(0, in) == RingStage::POWER_ON);
+  assert(ring.stage(799, in) == RingStage::POWER_ON);
+  assert(ring.stage(800, in) == RingStage::BOOTING);
+  assert(ring.stage(2499, in) == RingStage::BOOTING);
+  assert(ring.stage(2500, in) == RingStage::NO_WIFI);
+  assert(ring.frame(3750, in)[0].red > 0);
+  assert(ring.frame(3875, in)[0].red == 0);
+  in.wifi = true;
+  assert(ring.stage(4000, in) == RingStage::WAITING_CLOCK);
+  in.clock_synced = true;
+  assert(ring.stage(4000, in) == RingStage::NO_SERVER);
+  for (auto color : ring.frame(4000, in)) assert(color.red && !color.green && !color.blue);
+  in.connected = true;
+  assert(ring.stage(4500, in) == RingStage::WAITING_SESSION);
+  assert(ring.frame(4500, in)[0].red != ring.frame(5000, in)[0].red);
+  in.session_ready = true;
+  assert(ring.stage(6000, in) == RingStage::READY);
+  assert(ring.stage(7799, in) == RingStage::READY);
+  assert(ring.stage(7800, in) == RingStage::DORMANT);
+  in.awake = true;
+  assert(ring.stage(8000, in) == RingStage::AWAKE);
+  ring.wake(8100);
+  assert(ring.stage(8100, in) == RingStage::WAKING);
+  for (auto color : ring.frame(8100, in)) assert(color.red == color.green && color.green == color.blue && color.red > 0);
+  assert(ring.stage(8399, in) == RingStage::WAKING);
+  assert(ring.stage(8400, in) == RingStage::AWAKE);
+  in.showing_volume = true; in.volume = 0.5f;
+  assert(ring.stage(8500, in) == RingStage::VOLUME);
+  in.connected = false;
+  ring.wake(8600);
+  assert(ring.stage(8600, in) == RingStage::NO_SERVER);
+  in.wifi = false;
+  assert(ring.stage(8700, in) == RingStage::NO_WIFI);
+  in.muted = true;
+  assert(ring.stage(8800, in) == RingStage::MUTED);
+  auto muted = ring.frame(8800, in);
+  assert(muted[0].red && muted[6].red);
+  for (unsigned i = 0; i < 12; ++i) if (i != 0 && i != 6) assert(!muted[i].red);
+  in.muted = false; in.showing_volume = false; in.wifi = in.connected = true;
+  in.session_ready = false;
+  assert(ring.stage(9000, in) == RingStage::WAITING_SESSION);
+  in.session_ready = true;
+  assert(ring.stage(10000, in) == RingStage::READY);
+  assert(ring.stage(11800, in) == RingStage::AWAKE);
+  in.failed = true;
+  assert(ring.stage(12000, in) == RingStage::FAILED);
+  StatusRing wrapping;
+  RingInputs ready;
+  ready.wifi = ready.clock_synced = ready.connected = ready.session_ready = true;
+  const uint32_t start = UINT32_MAX - 500;
+  assert(wrapping.stage(start, ready) == RingStage::POWER_ON);
+  assert(wrapping.stage(start + uint32_t(1000), ready) == RingStage::BOOTING);
+  assert(wrapping.stage(start + uint32_t(3000), ready) == RingStage::READY);
+  assert(wrapping.stage(start + uint32_t(4800), ready) == RingStage::DORMANT);
+  wrapping.wake(UINT32_MAX - 100);
+  assert(wrapping.stage(50, ready) == RingStage::WAKING);
+  assert(wrapping.stage(200, ready) == RingStage::DORMANT);
+  std::cout << "PASS boot, ready, connection failures, mute, volume, wake flash and rollover\n";
+}

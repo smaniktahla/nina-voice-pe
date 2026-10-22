@@ -4,6 +4,7 @@
 #include "esphome/components/speaker/speaker.h"
 #include "esphome/components/ring_buffer/ring_buffer.h"
 #include "esp_websocket_client.h"
+#include "status_ring.h"
 #include <atomic>
 #include <string>
 
@@ -24,6 +25,8 @@ class NinaVoice : public Component {
   void button();
   void volume_step(float delta);
   bool connected() const { return connected_; }
+  bool ready() const { return connected_ && hello_received_ && session_received_ && !is_failed(); }
+  RingFrame status_frame();
   bool muted() const { return muted_; }
   bool awake() const { return awake_; }
   bool showing_volume() const { return volume_changed_ != 0 && millis() - volume_changed_ < 1500; }
@@ -45,6 +48,8 @@ class NinaVoice : public Component {
   SemaphoreHandle_t rx_mutex_{nullptr};
   std::string url_, headers_, certificate_, text_;
   std::atomic<bool> connected_{false}, muted_{false}, cancel_{false}, duck_{false}, awake_{false};
+  std::atomic<bool> hello_received_{false}, session_received_{false}, wake_flash_{false};
+  StatusRing status_ring_;
   std::atomic<uint32_t> input_bytes_{0}, output_bytes_{0}, dropped_bytes_{0};
   uint32_t last_stats_{0}, last_tx_{0}, start_time_{0};
   uint8_t rate_header_[4]{};
