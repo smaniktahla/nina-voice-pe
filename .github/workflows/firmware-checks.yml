@@ -1,0 +1,32 @@
+name: Firmware checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  led-state:
+    name: LED boot and wake state tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: g++ -std=c++17 -Wall -Wextra -Werror -Icomponents/nina_voice tests/status_ring_test.cpp -o /tmp/status-ring-test
+      - run: /tmp/status-ring-test
+      - run: g++ -std=c++17 -Wall -Wextra -Werror -Icomponents/nina_voice tests/volume_setting_test.cpp -o /tmp/volume-setting-test
+      - run: /tmp/volume-setting-test
+      - run: g++ -std=c++17 -Wall -Wextra -Werror -Icomponents/nina_voice tests/ready_chime_test.cpp -o /tmp/ready-chime-test
+      - run: /tmp/ready-chime-test
+  example-config:
+    name: Validate and compile example firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Prepare non-deployable validation inputs
+        run: |
+          cp secrets.example.yaml secrets.yaml
+          printf 'VALIDATION_ONLY_CERTIFICATE\n' > nina-server-cert.pem
+      - run: python -m esphome config voice.example.yaml
+      - run: python -m esphome compile voice.example.yaml

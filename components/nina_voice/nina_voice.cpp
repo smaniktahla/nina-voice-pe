@@ -16,7 +16,11 @@ void NinaVoice::setup() {
   rx_mutex_ = xSemaphoreCreateMutex();
   if (!tx_ || !rx_ || !rx_mutex_) { mark_failed(); return; }
   speaker_->set_audio_stream_info(audio::AudioStreamInfo(32, 2, 48000));
-  speaker_->set_volume(volume_);
+  volume_preference_ = global_preferences->make_preference<float>(0x4e564f4c);  // Stable NVOL key.
+  float saved_volume;
+  if (volume_preference_.load(&saved_volume) && volume_setting_.restore(saved_volume))
+    ESP_LOGI(TAG, "Restored speaker volume: %.0f%%", volume_setting_.fraction() * 100.0f);
+  speaker_->set_volume(volume_setting_.value());
   mic_->add_data_callback([this](const std::vector<uint8_t> &data) {
     if (connected_ && !muted_ && !using_playback_mic()) {
       const size_t n = tx_->write_without_replacement(data.data(), data.size(), 0, false);
@@ -65,12 +69,14 @@ void NinaVoice::event(void *arg, esp_event_base_t, int32_t id, void *data) {
 
 void NinaVoice::on_event(int32_t id, esp_websocket_event_data_t *data) {
   if (id == WEBSOCKET_EVENT_CONNECTED) {
+    hello_received_ = false; session_received_ = false; wake_flash_ = false; ready_chime_requested_ = false;
     connected_ = true;
     ESP_LOGI(TAG, "Authenticated WSS connected");
     return;
   }
   if (id == WEBSOCKET_EVENT_DISCONNECTED || id == WEBSOCKET_EVENT_CLOSED) {
     connected_ = false; cancel_ = true; awake_ = false;
+    hello_received_ = false; session_received_ = false; wake_flash_ = false; ready_chime_requested_ = false;
     ESP_LOGW(TAG, "WSS disconnected; waiting for reconnect");
     return;
   }
@@ -128,15 +134,44 @@ void NinaVoice::text_message() {
       duck_ = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "on"));
       ESP_LOGI(TAG, "Server duck: %s", duck_ ? "on" : "off");
     }
+    else if (strcmp(type->valuestring, "earcon") == 0) {
+      auto *kind = cJSON_GetObjectItemCaseSensitive(root, "kind");
+      if (cJSON_IsString(kind) && strcmp(kind->valuestring, "wake") == 0) wake_flash_ = true;
+    }
     else if (strcmp(type->valuestring, "mgr") == 0) {
       auto *state = cJSON_GetObjectItemCaseSensitive(root, "state");
       if (cJSON_IsString(state)) {
+        session_received_ = strcmp(state->valuestring, "ACTIVE") == 0 || strcmp(state->valuestring, "IDLE") == 0 ||
+                            strcmp(state->valuestring, "DORMANT") == 0 || strcmp(state->valuestring, "SUSPENDED") == 0;
         awake_ = strcmp(state->valuestring, "ACTIVE") == 0 || strcmp(state->valuestring, "IDLE") == 0;
         ESP_LOGI(TAG, "Session state: %s", state->valuestring);
       }
-    } else if (strcmp(type->valuestring, "hello") == 0) ESP_LOGI(TAG, "Nina hello received");
+    } else if (strcmp(type->valuestring, "hello") == 0) {
+      hello_received_ = true;
+      ESP_LOGI(TAG, "Nina hello received");
+    }
   }
   cJSON_Delete(root);
+}
+
+RingFrame NinaVoice::status_frame() {
+  if (wake_flash_.exchange(false)) status_ring_.wake(millis());
+  RingInputs inputs;
+  inputs.wifi = wifi::global_wifi_component != nullptr && wifi::global_wifi_component->is_connected();
+  inputs.clock_synced = std::time(nullptr) > 1700000000;
+  inputs.connected = connected_;
+  inputs.session_ready = ready() && (muted_ || mic_->is_running());
+  inputs.muted = muted_;
+  inputs.awake = awake_;
+  inputs.failed = is_failed();
+  inputs.showing_volume = showing_volume();
+  inputs.volume = volume_fraction();
+  auto pixels = status_ring_.frame(millis(), inputs);
+  if (status_ring_.take_ready_event()) {
+    ready_chime_requested_ = true;
+    ESP_LOGI(TAG, "Ready: green ring and chime");
+  }
+  return pixels;
 }
 
 void NinaVoice::clear_playback() {
@@ -144,6 +179,7 @@ void NinaVoice::clear_playback() {
   rx_->reset();
   xSemaphoreGive(rx_mutex_);
   pending_ = offset_ = 0;
+  ready_chime_.clear();
   speaker_->stop();
   duck_ = false;
 }
@@ -156,13 +192,27 @@ void NinaVoice::button() {
 }
 
 void NinaVoice::volume_step(float delta) {
-  volume_ = std::clamp(volume_ + delta, 0.0f, 0.70f);
-  speaker_->set_volume(volume_);
+  if (!volume_setting_.step(delta, millis())) return;
+  speaker_->set_volume(volume_setting_.value());
   volume_changed_ = millis();
   blip_left_ = 240;  // 10 ms, with an envelope to avoid a harsh click.
 }
 
+void NinaVoice::save_volume_() {
+  if (!volume_setting_.pending()) return;
+  const float value = volume_setting_.value();
+  if (volume_preference_.save(&value) && global_preferences->sync()) {
+    volume_setting_.saved();
+    ESP_LOGI(TAG, "Saved speaker volume: %.0f%%", volume_setting_.fraction() * 100.0f);
+  } else {
+    volume_setting_.retry_later(millis());
+    ESP_LOGW(TAG, "Could not save speaker volume; will retry");
+  }
+}
+
 void NinaVoice::loop() {
+  if (ready_chime_requested_.exchange(false) && ready()) ready_chime_.start();
+  if (volume_setting_.save_due(millis())) save_volume_();
   // Wait for time sync so the certificate's validity period is checked.
   if (!client_ && wifi::global_wifi_component->is_connected() && std::time(nullptr) > 1700000000) {
     esp_websocket_client_config_t cfg{};
@@ -186,26 +236,26 @@ void NinaVoice::loop() {
   }
   // Keep the audio queue fed independently of the ordinary ~16 ms ESPHome loop.
   // One 512-sample block lasts only 21 ms; network writes can otherwise starve it.
-  const bool playing = pending_ || rx_->available() || blip_left_ || speaker_->has_buffered_data();
+  const bool playing = pending_ || rx_->available() || blip_left_ || ready_chime_.active() || speaker_->has_buffered_data();
   if (playing) far_end_until_ = millis() + 400;
   if (playing) playback_loop_.start();
   else playback_loop_.stop();
   for (unsigned batch = 0; batch < 4; ++batch) {
-  if (pending_ == 0 && (rx_->available() >= 2 || blip_left_)) {
+  if (pending_ == 0 && (rx_->available() >= 2 || blip_left_ || ready_chime_.active())) {
     int16_t samples[512];
     xSemaphoreTake(rx_mutex_, portMAX_DELAY);
     size_t n = rx_->read(samples, std::min<size_t>(sizeof(samples), rx_->available() & ~size_t(1)));
     xSemaphoreGive(rx_mutex_);
     size_t frames = n / 2;
     if (frames == 0) {
-      frames = std::min<size_t>(512, blip_left_);
+      frames = std::min<size_t>(512, std::max<size_t>(blip_left_, ready_chime_.remaining()));
       std::fill_n(samples, frames, 0);
     }
     // Nina currently supplies 24 kHz. Duplicate each sample twice, into both 32-bit channels.
     // Gain ducking is applied on playback, without modifying the queued original PCM.
     const int32_t gain = duck_ ? 8192 : 65536;
     for (size_t i = 0; i < frames; ++i) {
-      int32_t pcm = samples[i];
+      int32_t pcm = samples[i] + ready_chime_.next();
       if (blip_left_) {
         const float phase = (240 - blip_left_) / 240.0f;
         pcm += int32_t(1800.0f * std::sin(2.0f * 3.14159265f * 1600.0f * (240 - blip_left_) / 24000.0f)
@@ -223,7 +273,7 @@ void NinaVoice::loop() {
     speaker_bytes_ += n;
     if (pending_) break;  // Speaker queue is full; don't spin here.
   }
-  if (pending_ == 0 && rx_->available() < 2 && !blip_left_) break;
+  if (pending_ == 0 && rx_->available() < 2 && !blip_left_ && !ready_chime_.active()) break;
   }
   if (millis() - last_stats_ >= 10000) {
     ESP_LOGI(TAG, "connected=%d muted=%d mic_bytes=%u playback_bytes=%u speaker_bytes=%u dropped=%u queued=%u",

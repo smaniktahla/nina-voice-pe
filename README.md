@@ -10,10 +10,52 @@ Audio travels over authenticated WSS, bypassing Home Assistant's Assist pipeline
 - 24 kHz mono Nina/Kokoro playback through the built-in speaker.
 - Hardware microphone mute and volume dial with a temporary LED arc and quiet per-step blips.
 - Center button to wake a dormant session or stop speech.
-- Status LEDs: amber disconnected, purple dormant, blue awake, red muted.
+- LED ring shows power-on, boot progress, connection failures, ready, wake acknowledgement, mute and volume.
 - Verified TLS, service-token authentication, a bounded 2 MiB response queue, and independent microphone transmission.
 
 Complete responses and dial feedback have been tested on hardware. This is an early integration. Listening range, echo cancellation, channel switching, barge-in, and long-run reconnect behavior still need room testing.
+
+## LED ring signals
+
+| Pattern | Meaning |
+| --- | --- |
+| White ring, about 0.8 seconds | Firmware has started and initialized the LEDs |
+| Moving cyan sweep | Booting (first 2.5 seconds, including the white start) |
+| Moving amber sweep | Wi-Fi connected; waiting for network time before verified TLS |
+| Fast red blink (4 flashes/second) | No Wi-Fi connection |
+| Solid red ring | Wi-Fi/time ready, but no Nina server connection |
+| Slowly pulsing red ring | Connected but waiting for Nina's hello/session readiness, or a component initialization failure |
+| Green hold/fade, about 3.2 seconds, with a rising chime | Nina session and microphone are ready; also shown after reconnect |
+| Soft white breath (0.3 seconds) | Nina acknowledged a wake-up, including “Hey Nina” |
+| Dim green ring | Ready and waiting for the wake word |
+| Blue ring | Awake/interactive session |
+| Two opposite steady red marks | Hardware microphone mute; overrides all other patterns |
+| Temporary cyan arc | Volume dial feedback; shown only when ready |
+
+The green cue and two-note rising chime are triggered by the same readiness event.
+The chime uses the saved speaker volume and the existing playback/echo-cancellation path.
+It plays once per successful connection, with no repeat while idle.
+
+Green requires both Nina's `hello` and a recognized `mgr` session message, plus
+an active microphone stream. A WSS connection alone is not considered ready.
+Connection state is reset on reconnect. The white wake flash follows Nina's
+`earcon: wake` acknowledgement, rather than flashing on arbitrary microphone noise.
+Errors and hardware mute take priority over wake and volume feedback.
+
+The animation starts at ESPHome's early post-hardware stage, before Wi-Fi and Nina
+setup. ROM/bootloader execution before the LED driver is initialized can still be
+dark. Animations are nonblocking and leave audio transmission/playback independent.
+
+LED logic tests (no ESP32 or ESPHome needed):
+
+    c++ -std=c++17 -Wall -Wextra -Werror -Icomponents/nina_voice tests/status_ring_test.cpp -o status-ring-test
+    ./status-ring-test
+
+The volume dial now saves its last setting to ESPHome preferences after one second
+without further adjustment and restores it before speaker startup. Software shutdown
+also flushes a pending change. Allow one second after turning the dial before cutting
+power. Invalid stored values fall back to the existing default; the 70% amplifier cap
+is retained.
 
 ## Tested hardware and dependencies
 
