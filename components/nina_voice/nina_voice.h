@@ -5,6 +5,9 @@
 #include "esphome/components/ring_buffer/ring_buffer.h"
 #include "esp_websocket_client.h"
 #include "status_ring.h"
+#include "volume_setting.h"
+#include "ready_chime.h"
+#include "esphome/core/preferences.h"
 #include <atomic>
 #include <string>
 
@@ -20,6 +23,7 @@ class NinaVoice : public Component {
   void setup() override;
   void loop() override;
   void dump_config() override;
+  void on_shutdown() override { save_volume_(); }
   float get_setup_priority() const override { return setup_priority::AFTER_WIFI; }
   void set_muted(bool v) { muted_ = v; }
   void button();
@@ -30,12 +34,13 @@ class NinaVoice : public Component {
   bool muted() const { return muted_; }
   bool awake() const { return awake_; }
   bool showing_volume() const { return volume_changed_ != 0 && millis() - volume_changed_ < 1500; }
-  float volume_fraction() const { return volume_ / 0.70f; }
+  float volume_fraction() const { return volume_setting_.fraction(); }
  protected:
   static void event(void *arg, esp_event_base_t base, int32_t id, void *data);
   void on_event(int32_t id, esp_websocket_event_data_t *data);
   void text_message();
   void clear_playback();
+  void save_volume_();
   static void microphone_task(void *arg);
   TaskHandle_t microphone_task_{nullptr};
   microphone::MicrophoneSource *mic_{nullptr};
@@ -48,8 +53,9 @@ class NinaVoice : public Component {
   SemaphoreHandle_t rx_mutex_{nullptr};
   std::string url_, headers_, certificate_, text_;
   std::atomic<bool> connected_{false}, muted_{false}, cancel_{false}, duck_{false}, awake_{false};
-  std::atomic<bool> hello_received_{false}, session_received_{false}, wake_flash_{false};
+  std::atomic<bool> hello_received_{false}, session_received_{false}, wake_flash_{false}, ready_chime_requested_{false};
   StatusRing status_ring_;
+  ReadyChime ready_chime_;
   std::atomic<uint32_t> input_bytes_{0}, output_bytes_{0}, dropped_bytes_{0};
   uint32_t last_stats_{0}, last_tx_{0}, start_time_{0};
   uint8_t rate_header_[4]{};
@@ -58,7 +64,8 @@ class NinaVoice : public Component {
   uint32_t message_bytes_{0};
   int32_t play_buffer_[2048]{};
   size_t pending_{0}, offset_{0};
-  float volume_{0.45f};
+  VolumeSetting volume_setting_;
+  ESPPreferenceObject volume_preference_;
   uint32_t volume_changed_{0};
   uint32_t speaker_bytes_{0};
   uint16_t blip_left_{0};

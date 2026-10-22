@@ -25,12 +25,16 @@ Complete responses and dial feedback have been tested on hardware. This is an ea
 | Fast red blink (4 flashes/second) | No Wi-Fi connection |
 | Solid red ring | Wi-Fi/time ready, but no Nina server connection |
 | Slowly pulsing red ring | Connected but waiting for Nina's hello/session readiness, or a component initialization failure |
-| Two green pulses, about 1.8 seconds | Nina session and microphone are ready; also shown after reconnect |
-| Brief white flash (0.3 seconds) | Nina acknowledged a wake-up, including “Hey Nina” |
-| Dim purple ring | Ready and waiting for the wake word |
+| Green hold/fade, about 3.2 seconds, with a rising chime | Nina session and microphone are ready; also shown after reconnect |
+| Soft white breath (0.3 seconds) | Nina acknowledged a wake-up, including “Hey Nina” |
+| Dim green ring | Ready and waiting for the wake word |
 | Blue ring | Awake/interactive session |
 | Two opposite steady red marks | Hardware microphone mute; overrides all other patterns |
 | Temporary cyan arc | Volume dial feedback; shown only when ready |
+
+The green cue and two-note rising chime are triggered by the same readiness event.
+The chime uses the saved speaker volume and the existing playback/echo-cancellation path.
+It plays once per successful connection, with no repeat while idle.
 
 Green requires both Nina's `hello` and a recognized `mgr` session message, plus
 an active microphone stream. A WSS connection alone is not considered ready.
@@ -46,6 +50,12 @@ LED logic tests (no ESP32 or ESPHome needed):
 
     c++ -std=c++17 -Wall -Wextra -Werror -Icomponents/nina_voice tests/status_ring_test.cpp -o status-ring-test
     ./status-ring-test
+
+The volume dial now saves its last setting to ESPHome preferences after one second
+without further adjustment and restores it before speaker startup. Software shutdown
+also flushes a pending change. Allow one second after turning the dial before cutting
+power. Invalid stored values fall back to the existing default; the 70% amplifier cap
+is retained.
 
 ## Tested hardware and dependencies
 

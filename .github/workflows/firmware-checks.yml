@@ -11,6 +11,10 @@ jobs:
       - uses: actions/checkout@v4
       - run: g++ -std=c++17 -Wall -Wextra -Werror -Icomponents/nina_voice tests/status_ring_test.cpp -o /tmp/status-ring-test
       - run: /tmp/status-ring-test
+      - run: g++ -std=c++17 -Wall -Wextra -Werror -Icomponents/nina_voice tests/volume_setting_test.cpp -o /tmp/volume-setting-test
+      - run: /tmp/volume-setting-test
+      - run: g++ -std=c++17 -Wall -Wextra -Werror -Icomponents/nina_voice tests/ready_chime_test.cpp -o /tmp/ready-chime-test
+      - run: /tmp/ready-chime-test
   example-config:
     name: Validate and compile example firmware
     runs-on: ubuntu-latest

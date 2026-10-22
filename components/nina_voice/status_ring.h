@@ -21,11 +21,12 @@ enum class RingStage { POWER_ON, BOOTING, NO_WIFI, WAITING_CLOCK, NO_SERVER,
 // No network/audio work, sleeps or LED-driver dependencies. All timing is wrap-safe.
 class StatusRing {
  public:
+  bool take_ready_event() { const bool event = ready_event_; ready_event_ = false; return event; }
   void wake(uint32_t now) { wake_seen_ = true; wake_at_ = now; }
 
   RingStage stage(uint32_t now, const RingInputs &in) {
     if (!started_) { started_ = true; boot_at_ = now; }
-    if (!in.session_ready || !in.connected || !in.wifi || in.failed) ready_seen_ = false;
+    if (!in.session_ready || !in.connected || !in.wifi || in.failed) { ready_seen_ = false; ready_event_ = false; }
     if (in.muted) return RingStage::MUTED;
     if (in.failed) return RingStage::FAILED;
     if (!boot_complete_) {
@@ -38,9 +39,9 @@ class StatusRing {
     if (!in.clock_synced) return RingStage::WAITING_CLOCK;
     if (!in.connected) return RingStage::NO_SERVER;
     if (!in.session_ready) return RingStage::WAITING_SESSION;
-    if (!ready_seen_) { ready_seen_ = true; ready_at_ = now; }
+    if (!ready_seen_) { ready_seen_ = true; ready_at_ = now; ready_event_ = true; }
     if (wake_seen_ && uint32_t(now - wake_at_) < 300) return RingStage::WAKING;
-    if (uint32_t(now - ready_at_) < 1800) return RingStage::READY;
+    if (uint32_t(now - ready_at_) < 3200) return RingStage::READY;
     if (in.showing_volume) return RingStage::VOLUME;
     return in.awake ? RingStage::AWAKE : RingStage::DORMANT;
   }
@@ -50,8 +51,13 @@ class StatusRing {
     const auto visible = stage(now, in);
     switch (visible) {
       case RingStage::POWER_ON:
-      case RingStage::WAKING:
         pixels.fill({96, 96, 96}); break;
+      case RingStage::WAKING: {
+        // A single soft white breath, rather than an abrupt rectangular flash.
+        const uint8_t level = pulse(now - wake_at_, 300, 80);
+        pixels.fill({level, level, level});
+        break;
+      }
       case RingStage::BOOTING:
       case RingStage::WAITING_CLOCK: {
         const bool clock = visible == RingStage::WAITING_CLOCK;
@@ -72,15 +78,19 @@ class StatusRing {
       case RingStage::WAITING_SESSION:
       case RingStage::FAILED:
         pixels.fill({pulse(now, 2000, 64), 0, 0}); break;
-      case RingStage::READY:
-        pixels.fill({0, pulse(now - ready_at_, 900, 96), 0}); break;
+      case RingStage::READY: {
+        const uint32_t age = now - ready_at_;
+        const uint8_t level = age < 1200 ? 96 : uint8_t(96 - (age - 1200) * 64 / 2000);
+        pixels.fill({0, level, 0});
+        break;
+      }
       case RingStage::MUTED:
         // Two steady red marks distinguish hardware mute from a solid red ring.
         pixels[0] = pixels[6] = {40, 0, 0}; break;
       case RingStage::AWAKE:
         pixels.fill({0, 8, 20}); break;
       case RingStage::DORMANT:
-        pixels.fill({5, 0, 10}); break;
+        pixels.fill({0, 32, 0}); break;
       case RingStage::VOLUME: {
         const float segments = std::clamp(in.volume, 0.0f, 1.0f) * 12.0f;
         for (unsigned i = 0; i < 12; ++i) {
@@ -99,7 +109,7 @@ class StatusRing {
     const uint32_t ramp = phase < half ? phase : period - phase;
     return uint8_t(4 + (maximum - 4) * ramp / half);
   }
-  bool started_{false}, boot_complete_{false}, ready_seen_{false}, wake_seen_{false};
+  bool started_{false}, boot_complete_{false}, ready_seen_{false}, wake_seen_{false}, ready_event_{false};
   uint32_t boot_at_{0}, ready_at_{0}, wake_at_{0};
 };
 
